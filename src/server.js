@@ -15,7 +15,9 @@ const BATCH_SIZE = 10;
 const DELAY_BETWEEN_BATCHES = 300;
 const REQUEST_TIMEOUT = 300000; // 5 minutes timeout
 const KEEP_ALIVE_TIMEOUT = 305000; // Slightly longer than request timeout
-const SSE_RETRY_TIMEOUT = 15000; // 15 seconds retry timeout
+const SSE_RETRY_INTERVAL = 5000; // 5 seconds
+const SSE_HEARTBEAT_INTERVAL = 15000; // 15 seconds
+const MAX_CONNECTION_TIME = 30 * 60 * 1000; // 30 minutes
 
 // Middleware
 app.use(cors());
@@ -42,67 +44,91 @@ if (!process.env.OPENROUTER_API_KEY) {
 // Add a variable to store results
 let analysisResults = [];
 
-// Modified SSE setup with better connection handling
+// Modified SSE endpoint with better connection handling
 app.get('/api/analysis-progress', (req, res) => {
     const clientId = Date.now().toString(36) + Math.random().toString(36).substr(2);
     
-    // Set headers for better SSE handling
+    // Configure headers for stable SSE connection
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no',
         'Access-Control-Allow-Origin': '*',
-        'retry': SSE_RETRY_TIMEOUT
+        'Access-Control-Allow-Credentials': 'true'
     });
 
-    // Send initial connection message with retry information
-    res.write(`retry: ${SSE_RETRY_TIMEOUT}\n`);
-    res.write('data: {"type": "connected"}\n\n');
+    // Write retry interval
+    res.write(`retry: ${SSE_RETRY_INTERVAL}\n`);
+    
+    // Send initial connection message with ID
+    const initialMessage = {
+        type: 'connected',
+        clientId,
+        timestamp: Date.now()
+    };
+    res.write(`data: ${JSON.stringify(initialMessage)}\n\n`);
 
-    // More frequent heartbeat (every 15 seconds)
+    // Set up heartbeat interval
     const heartbeat = setInterval(() => {
-        if (clients.has(clientId)) {
-            try {
-                res.write('data: {"type": "heartbeat"}\n\n');
-            } catch (error) {
-                console.error('Heartbeat error:', error);
-                cleanup();
+        try {
+            if (clients.has(clientId)) {
+                res.write(`data: ${JSON.stringify({ type: 'heartbeat', timestamp: Date.now() })}\n\n`);
             }
+        } catch (error) {
+            console.error('Heartbeat error:', error);
+            cleanup();
         }
-    }, 15000);
+    }, SSE_HEARTBEAT_INTERVAL);
 
-    // Keep connection alive
-    req.socket.setKeepAlive(true);
-    req.socket.setTimeout(0);
+    // Set up connection timeout
+    const connectionTimeout = setTimeout(() => {
+        console.log(`Client ${clientId} connection timed out`);
+        cleanup();
+    }, MAX_CONNECTION_TIME);
 
     // Cleanup function
     const cleanup = () => {
         clearInterval(heartbeat);
+        clearTimeout(connectionTimeout);
         clients.delete(clientId);
+        try {
+            res.end();
+        } catch (error) {
+            console.error('Error ending response:', error);
+        }
     };
 
-    // Store client
+    // Store client information
     clients.set(clientId, {
         res,
         timestamp: Date.now(),
         cleanup
     });
 
-    // Handle client disconnect
-    req.on('close', cleanup);
-    req.on('end', cleanup);
-    req.on('error', cleanup);
+    // Handle connection close
+    req.on('close', () => {
+        console.log(`Client ${clientId} disconnected`);
+        cleanup();
+    });
+
+    // Handle errors
+    req.on('error', (error) => {
+        console.error(`Client ${clientId} error:`, error);
+        cleanup();
+    });
 });
 
 // Improved sendProgressUpdate function
 function sendProgressUpdate(data) {
-    const now = Date.now();
-    const message = `data: ${JSON.stringify({ ...data, timestamp: now })}\n\n`;
-    
+    const message = {
+        ...data,
+        timestamp: Date.now()
+    };
+
     clients.forEach((client, clientId) => {
         try {
-            client.res.write(message);
+            client.res.write(`data: ${JSON.stringify(message)}\n\n`);
         } catch (error) {
             console.error(`Error sending to client ${clientId}:`, error);
             client.cleanup();
