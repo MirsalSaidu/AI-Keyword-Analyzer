@@ -652,20 +652,23 @@
                 formData.append('file', fileInput.files[0]);
                 formData.append('topic', topicInput.value);
 
-                const response = await fetch('/api/analyze', {
+                const response = await fetch('/api/analyze-bulk', {
                     method: 'POST',
                     body: formData
                 });
 
                 if (!response.ok) {
-                    throw new Error('Failed to start analysis');
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to start analysis');
                 }
+
+                console.log('Analysis started successfully');
 
             } catch (error) {
                 console.error('Analysis error:', error);
                 showError(error.message);
                 isProcessing = false;
-                analyzeBtn.disabled = false;
+                document.getElementById('analyzeBtn').disabled = false;
             }
         }
 
@@ -674,7 +677,7 @@
                 eventSource.close();
             }
 
-            eventSource = new EventSource('/api/progress');
+            eventSource = new EventSource('/api/analysis-progress');
 
             eventSource.onopen = () => {
                 console.log('SSE connection established');
@@ -778,7 +781,7 @@
 
         async function downloadResults() {
             try {
-                const response = await fetch('/api/download');
+                const response = await fetch('/api/download-results');
                 if (!response.ok) {
                     throw new Error('Download failed');
                 }
