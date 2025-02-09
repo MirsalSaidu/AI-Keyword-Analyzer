@@ -24,7 +24,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
 // SSE endpoint
-app.get('/api/progress', (req, res) => {
+app.get('/api/analysis-progress', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -102,11 +102,17 @@ async function analyzeKeyword(keyword, matchType, topic) {
     }
 }
 
-app.post('/api/analyze', upload.single('file'), async (req, res) => {
+app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
+        if (!req.body.topic) {
+            return res.status(400).json({ error: 'Topic is required' });
+        }
+
+        console.log('Starting analysis...');
+        console.log('Topic:', req.body.topic);
 
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(req.file.buffer);
@@ -181,7 +187,7 @@ app.post('/api/analyze', upload.single('file'), async (req, res) => {
     }
 });
 
-app.get('/api/download', async (req, res) => {
+app.get('/api/download-results', async (req, res) => {
     try {
         if (analysisResults.length === 0) {
             return res.status(404).json({ error: 'No results available' });
