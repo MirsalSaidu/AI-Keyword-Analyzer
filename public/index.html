@@ -598,6 +598,8 @@
 
             const processedKeywordSet = new Set();
             let isProcessing = false;
+            let reconnectAttempts = 0;
+            const MAX_RECONNECT_ATTEMPTS = 3;
 
             try {
                 if (!fileInput.files[0]) {
@@ -622,76 +624,104 @@
                 formData.append('file', fileInput.files[0]);
                 formData.append('topic', topicInput.value);
 
-                // Start analysis with relative path
-                fetch('/api/analyze-bulk', {
+                // Start analysis
+                const response = await fetch('/api/analyze-bulk', {
                     method: 'POST',
                     body: formData
                 });
 
-                // Set up SSE with relative path
-                const eventSource = new EventSource('/api/analysis-progress');
-                
-                eventSource.onmessage = (event) => {
-                    const data = JSON.parse(event.data);
+                if (!response.ok) {
+                    throw new Error('Failed to start analysis');
+                }
 
-                    switch(data.type) {
-                        case 'start':
-                            totalKeywordsEl.textContent = data.total;
-                            remainingKeywordsEl.textContent = data.total;
-                            processedKeywordsEl.textContent = '0';
-                            break;
+                function setupEventSource() {
+                    const eventSource = new EventSource('/api/analysis-progress');
+                    
+                    eventSource.onopen = () => {
+                        console.log('SSE connection established');
+                        reconnectAttempts = 0;
+                    };
 
-                        case 'processing':
-                        case 'completed':
-                            if (!processedKeywordSet.has(data.keyword)) {
-                                processedKeywordSet.add(data.keyword);
-                                const keywordItem = document.createElement('div');
-                                keywordItem.className = 'keyword-item';
-                                keywordItem.setAttribute('data-keyword', data.keyword);
-                                keywordItem.innerHTML = `
-                                    <div class="keyword-text">
-                                        <i class="fas fa-keyboard"></i>
-                                        ${data.keyword}
-                                    </div>
-                                    <div class="keyword-status">
-                                        <span class="status-badge ${data.status.toLowerCase()}">
-                                            ${data.status}
-                                        </span>
-                                    </div>
-                                `;
-                                processingKeywords.insertBefore(keywordItem, processingKeywords.firstChild);
-                            } else {
-                                updateKeywordStatus(data.keyword, data.status);
-                            }
-                            break;
+                    eventSource.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        console.log('Received event:', data);
 
-                        case 'progress':
-                            updateProgress(data.processed, data.total);
-                            break;
+                        if (data.type === 'heartbeat') return;
 
-                        case 'complete':
+                        switch(data.type) {
+                            case 'connected':
+                                console.log('Connected to server');
+                                break;
+
+                            case 'start':
+                                totalKeywordsEl.textContent = data.total;
+                                remainingKeywordsEl.textContent = data.total;
+                                processedKeywordsEl.textContent = '0';
+                                break;
+
+                            case 'processing':
+                            case 'completed':
+                                if (!processedKeywordSet.has(data.keyword)) {
+                                    processedKeywordSet.add(data.keyword);
+                                    const keywordItem = document.createElement('div');
+                                    keywordItem.className = 'keyword-item';
+                                    keywordItem.setAttribute('data-keyword', data.keyword);
+                                    keywordItem.innerHTML = `
+                                        <div class="keyword-text">
+                                            <i class="fas fa-keyboard"></i>
+                                            ${data.keyword}
+                                        </div>
+                                        <div class="keyword-status">
+                                            <span class="status-badge ${data.status.toLowerCase()}">
+                                                ${data.status}
+                                            </span>
+                                        </div>
+                                    `;
+                                    processingKeywords.insertBefore(keywordItem, processingKeywords.firstChild);
+                                } else {
+                                    updateKeywordStatus(data.keyword, data.status);
+                                }
+                                break;
+
+                            case 'progress':
+                                updateProgress(data.processed, data.total);
+                                break;
+
+                            case 'complete':
+                                isProcessing = false;
+                                eventSource.close();
+                                downloadBtn.disabled = false;
+                                showCompletionMessage(data.message);
+                                break;
+
+                            case 'error':
+                                throw new Error(data.message);
+                        }
+                    };
+
+                    eventSource.onerror = (error) => {
+                        console.error('SSE Error:', error);
+                        eventSource.close();
+                        
+                        if (isProcessing && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                            console.log(`Reconnecting... Attempt ${reconnectAttempts + 1}`);
+                            reconnectAttempts++;
+                            setTimeout(setupEventSource, 1000 * reconnectAttempts);
+                        } else if (isProcessing) {
+                            showError('Connection lost. Please try again.');
                             isProcessing = false;
-                            eventSource.close();
-                            downloadBtn.disabled = false;
-                            showCompletionMessage(data.message);
-                            break;
+                        }
+                    };
 
-                        case 'error':
-                            eventSource.close();
-                            throw new Error(data.message);
-                    }
-                };
+                    return eventSource;
+                }
 
-                eventSource.onerror = (error) => {
-                    console.error('SSE Error:', error);
-                    eventSource.close();
-                    if (isProcessing) {
-                        showError('Connection lost. Please try again.');
-                    }
-                };
+                setupEventSource();
 
             } catch (error) {
+                console.error('Analysis error:', error);
                 showError(error.message);
+                isProcessing = false;
             }
         }
 
