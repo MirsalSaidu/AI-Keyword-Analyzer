@@ -18,10 +18,18 @@ const MAX_RETRIES = 3;
 const RATE_LIMIT_PAUSE = 60000; // 1 minute pause when rate limited
 const MAX_CONCURRENT_CONNECTIONS = 100;
 
-// SSE Constants
-const SSE_KEEPALIVE_INTERVAL = 3000; // 3 seconds
-const SSE_TIMEOUT = 8 * 60 * 60 * 1000; // 8 hours
-const PROGRESS_CHUNK_SIZE = 10; // Update progress every 10 keywords
+// Global state
+let processingState = {
+    isProcessing: false,
+    processedCount: 0,
+    totalKeywords: 0,
+    results: [],
+    errors: [],
+    startTime: null,
+    lastUpdateTime: null,
+    currentKeyword: '',
+    status: 'idle' // idle, processing, completed, error
+};
 
 // Middleware
 app.use(cors());
@@ -37,153 +45,20 @@ app.use((req, res, next) => {
     next();
 });
 
-// Global state
-let globalProcessingState = {
-    isProcessing: false,
-    processedCount: 0,
-    totalKeywords: 0,
-    results: [],
-    errors: [],
-    startTime: Date.now(),
-    lastUpdateTime: Date.now()
-};
-
-// Create a new connection manager
-class ConnectionManager {
-    constructor() {
-        this.clients = new Map();
-        this.setupPeriodicCleanup();
-    }
-
-    addClient(clientId, res) {
-        const client = {
-            res,
-            startTime: Date.now(),
-            lastPingTime: Date.now(),
-            isAlive: true
-        };
-
-        this.clients.set(clientId, client);
-        this.setupClientKeepalive(clientId);
-        return client;
-    }
-
-    setupClientKeepalive(clientId) {
-        const keepaliveInterval = setInterval(() => {
-            const client = this.clients.get(clientId);
-            if (client && client.isAlive) {
-                try {
-                    client.res.write(`data: ${JSON.stringify({
-                        type: 'keepalive',
-                        timestamp: Date.now(),
-                        state: {
-                            isProcessing: globalProcessingState.isProcessing,
-                            processedCount: globalProcessingState.processedCount,
-                            totalKeywords: globalProcessingState.totalKeywords
-                        }
-                    })}\n\n`);
-                    client.lastPingTime = Date.now();
-                } catch (error) {
-                    console.error(`Keepalive error for client ${clientId}:`, error);
-                    this.removeClient(clientId);
-                }
-            } else {
-                clearInterval(keepaliveInterval);
-            }
-        }, SSE_KEEPALIVE_INTERVAL);
-
-        // Auto-cleanup after timeout
-        setTimeout(() => this.removeClient(clientId), SSE_TIMEOUT);
-    }
-
-    removeClient(clientId) {
-        const client = this.clients.get(clientId);
-        if (client) {
-            client.isAlive = false;
-            try {
-                client.res.end();
-            } catch (error) {
-                console.error(`Error ending response for client ${clientId}:`, error);
-            }
-            this.clients.delete(clientId);
-        }
-    }
-
-    broadcast(data) {
-        const message = `data: ${JSON.stringify({
-            ...data,
-            timestamp: Date.now(),
-            state: {
-                isProcessing: globalProcessingState.isProcessing,
-                processedCount: globalProcessingState.processedCount,
-                totalKeywords: globalProcessingState.totalKeywords
-            }
-        })}\n\n`;
-
-        this.clients.forEach((client, clientId) => {
-            if (client.isAlive) {
-                try {
-                    client.res.write(message);
-                } catch (error) {
-                    console.error(`Broadcast error for client ${clientId}:`, error);
-                    this.removeClient(clientId);
-                }
-            }
-        });
-    }
-
-    setupPeriodicCleanup() {
-        setInterval(() => {
-            const now = Date.now();
-            this.clients.forEach((client, clientId) => {
-                if (now - client.lastPingTime > SSE_KEEPALIVE_INTERVAL * 2) {
-                    console.log(`Client ${clientId} timed out`);
-                    this.removeClient(clientId);
-                }
-            });
-        }, SSE_KEEPALIVE_INTERVAL);
-    }
-}
-
-const connectionManager = new ConnectionManager();
-
-// Add API key validation
-if (!process.env.OPENROUTER_API_KEY) {
-    console.error('OPENROUTER_API_KEY is not set in environment variables');
-}
-
-// Modified SSE endpoint
-app.get('/api/analysis-progress', (req, res) => {
-    const clientId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-    
-    res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Credentials': 'true'
+// Status endpoint for polling
+app.get('/api/status', (req, res) => {
+    res.json({
+        ...processingState,
+        timestamp: Date.now()
     });
-
-    const client = connectionManager.addClient(clientId, res);
-
-    // Send initial state
-    if (globalProcessingState.isProcessing) {
-        client.res.write(`data: ${JSON.stringify({
-            type: 'reconnect-state',
-            state: globalProcessingState
-        })}\n\n`);
-    }
-
-    req.on('close', () => connectionManager.removeClient(clientId));
 });
 
-// Rate limiting
+// Rate limiter
 const rateLimiter = {
     tokens: 50,
     lastRefill: Date.now(),
-    refillRate: 50, // tokens per minute
-    refillInterval: 60000, // 1 minute
+    refillRate: 50,
+    refillInterval: 60000,
 
     async getToken() {
         const now = Date.now();
@@ -204,10 +79,11 @@ const rateLimiter = {
     }
 };
 
-// Modified keyword analysis with rate limiting
+// Keyword analysis function
 async function analyzeKeyword(keyword, matchType, topic, retryCount = 0) {
     try {
         await rateLimiter.getToken();
+        processingState.currentKeyword = keyword;
 
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
@@ -234,7 +110,6 @@ async function analyzeKeyword(keyword, matchType, topic, retryCount = 0) {
         });
 
         if (response.status === 429) {
-            console.log('Rate limited, pausing...');
             await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_PAUSE));
             return analyzeKeyword(keyword, matchType, topic, retryCount);
         }
@@ -252,7 +127,7 @@ async function analyzeKeyword(keyword, matchType, topic, retryCount = 0) {
 
     } catch (error) {
         if (retryCount < MAX_RETRIES) {
-            const delay = Math.pow(2, retryCount) * 5000; // Exponential backoff
+            const delay = Math.pow(2, retryCount) * 5000;
             await new Promise(resolve => setTimeout(resolve, delay));
             return analyzeKeyword(keyword, matchType, topic, retryCount + 1);
         }
@@ -260,10 +135,10 @@ async function analyzeKeyword(keyword, matchType, topic, retryCount = 0) {
     }
 }
 
-// Modified bulk analysis endpoint
+// Bulk analysis endpoint
 app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
     try {
-        if (globalProcessingState.isProcessing) {
+        if (processingState.isProcessing) {
             return res.status(409).json({ error: 'Analysis already in progress' });
         }
 
@@ -288,54 +163,40 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
             return res.status(400).json({ error: 'No keywords found in file' });
         }
 
-        console.log(`Starting analysis of ${keywords.length} keywords`);
-
-        // Initialize global state
-        globalProcessingState = {
+        // Reset and initialize state
+        processingState = {
             isProcessing: true,
             processedCount: 0,
             totalKeywords: keywords.length,
             results: [],
             errors: [],
             startTime: Date.now(),
-            lastUpdateTime: Date.now()
+            lastUpdateTime: Date.now(),
+            currentKeyword: '',
+            status: 'processing'
         };
 
         // Send immediate response
         res.json({ 
             success: true, 
             message: 'Analysis started',
-            totalKeywords: keywords.length,
-            estimatedTime: Math.ceil(keywords.length * 1.5) // Estimated minutes
+            totalKeywords: keywords.length
         });
 
-        // Process in chunks with progress tracking
-        let lastProgressUpdate = 0;
-
+        // Process keywords
         for (let i = 0; i < keywords.length; i += BATCH_SIZE) {
             const batch = keywords.slice(i, Math.min(i + BATCH_SIZE, keywords.length));
             
             for (const { keyword, matchType } of batch) {
                 try {
                     const result = await analyzeKeyword(keyword, matchType, req.body.topic);
-                    globalProcessingState.results.push(result);
-                    globalProcessingState.processedCount++;
-
-                    // Update progress in chunks to reduce messages
-                    if (globalProcessingState.processedCount - lastProgressUpdate >= PROGRESS_CHUNK_SIZE) {
-                        connectionManager.broadcast({
-                            type: 'progress',
-                            processed: globalProcessingState.processedCount,
-                            total: globalProcessingState.totalKeywords,
-                            percentComplete: Math.round((globalProcessingState.processedCount / globalProcessingState.totalKeywords) * 100),
-                            estimatedTimeRemaining: Math.ceil((globalProcessingState.totalKeywords - globalProcessingState.processedCount) * 1.5)
-                        });
-                        lastProgressUpdate = globalProcessingState.processedCount;
-                    }
+                    processingState.results.push(result);
+                    processingState.processedCount++;
+                    processingState.lastUpdateTime = Date.now();
 
                 } catch (error) {
                     console.error(`Error processing "${keyword}":`, error);
-                    globalProcessingState.errors.push({ keyword, error: error.message });
+                    processingState.errors.push({ keyword, error: error.message });
                     
                     if (error.message.includes('429')) {
                         await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_PAUSE));
@@ -348,69 +209,38 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
             await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
         }
 
-        // Final update
-        globalProcessingState.isProcessing = false;
-        connectionManager.broadcast({
-            type: 'complete',
-            processed: globalProcessingState.processedCount,
-            total: globalProcessingState.totalKeywords,
-            message: 'Analysis completed successfully!',
-            totalTime: Math.round((Date.now() - globalProcessingState.startTime) / 60000)
-        });
+        // Mark as completed
+        processingState.isProcessing = false;
+        processingState.status = 'completed';
+        processingState.currentKeyword = '';
 
     } catch (error) {
         console.error('Analysis error:', error);
-        globalProcessingState.isProcessing = false;
-        connectionManager.broadcast({
-            type: 'error',
-            message: error.message
-        });
+        processingState.isProcessing = false;
+        processingState.status = 'error';
+        processingState.errors.push({ error: error.message });
     }
 });
 
-// Add download endpoint
+// Download results endpoint
 app.get('/api/download-results', async (req, res) => {
     try {
-        if (!globalProcessingState.results || globalProcessingState.results.length === 0) {
-            return res.status(404).json({ error: 'No results available for download' });
+        if (processingState.results.length === 0) {
+            return res.status(404).json({ error: 'No results available' });
         }
 
-        // Create a new workbook
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Analysis Results');
 
-        // Add headers
         worksheet.addRow(['Keyword', 'Match Type', 'Status']);
-
-        // Add data
-        globalProcessingState.results.forEach(result => {
+        processingState.results.forEach(result => {
             worksheet.addRow([
                 result.keyword,
                 result.matchType,
-                result.status === true ? 'Relevant' : 
-                result.status === false ? 'Not Relevant' : 
-                'Error'
+                result.status === true ? 'Relevant' : 'Not Relevant'
             ]);
         });
 
-        // Style the headers
-        const headerRow = worksheet.getRow(1);
-        headerRow.font = { bold: true };
-        headerRow.fill = {
-            type: 'pattern',
-            pattern: 'solid',
-            fgColor: { argb: 'FFE0E0E0' }
-        };
-
-        // Auto-fit columns
-        worksheet.columns.forEach(column => {
-            column.width = Math.max(
-                Math.max(...column.values.map(v => v ? v.toString().length : 0)),
-                column.header.length
-            ) + 2;
-        });
-
-        // Set response headers
         res.setHeader(
             'Content-Type',
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -420,16 +250,12 @@ app.get('/api/download-results', async (req, res) => {
             'attachment; filename=keyword-analysis-results.xlsx'
         );
 
-        // Write to response
         await workbook.xlsx.write(res);
         res.end();
 
     } catch (error) {
         console.error('Download error:', error);
-        res.status(500).json({
-            error: 'Download failed',
-            message: error.message
-        });
+        res.status(500).json({ error: 'Download failed' });
     }
 });
 
