@@ -419,9 +419,9 @@
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 0.5rem;
-            border-bottom: 1px solid var(--border);
-            animation: slideIn 0.3s ease;
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+            animation: fadeIn 0.3s ease-in;
         }
 
         .keyword-item:last-child {
@@ -431,7 +431,7 @@
         .keyword-text {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 8px;
         }
 
         .keyword-status {
@@ -442,31 +442,29 @@
         }
 
         .status-badge {
-            padding: 0.25rem 0.75rem;
-            border-radius: 9999px;
-            font-size: 0.75rem;
-            font-weight: 500;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.9em;
         }
 
         .status-badge.processing {
-            background: rgba(37, 99, 235, 0.1);
-            color: var(--primary);
+            background-color: #fff3e0;
+            color: #f57c00;
         }
 
         .status-badge.done {
-            background: rgba(22, 163, 74, 0.1);
-            color: var(--success);
+            background-color: #e8f5e9;
+            color: #4caf50;
         }
 
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateY(-10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
+        .status-badge.error {
+            background-color: #ffebee;
+            color: #f44336;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
 
         .stats-container {
@@ -527,41 +525,6 @@
             font-size: 0.9em;
             color: #666;
             margin-top: 5px;
-        }
-
-        .keyword-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 8px;
-            border-bottom: 1px solid #eee;
-        }
-
-        .keyword-text {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .status-badge {
-            padding: 4px 8px;
-            border-radius: 12px;
-            font-size: 0.9em;
-        }
-
-        .status-badge.processing {
-            background-color: #fff3e0;
-            color: #f57c00;
-        }
-
-        .status-badge.done {
-            background-color: #e8f5e9;
-            color: #4caf50;
-        }
-
-        .status-badge.error {
-            background-color: #ffebee;
-            color: #f44336;
         }
     </style>
 </head>
@@ -652,9 +615,8 @@
     </div>
 
     <script>
+        let eventSource = null;
         let isProcessing = false;
-        let pollInterval;
-        const POLL_INTERVAL = 2000; // Poll every 2 seconds
 
         async function analyzeFile() {
             const fileInput = document.getElementById('file');
@@ -663,34 +625,34 @@
             const loadingUI = document.getElementById('loadingUI');
             const analyzeBtn = document.getElementById('analyzeBtn');
             const downloadBtn = document.getElementById('downloadBtn');
-            const processingKeywords = document.getElementById('processingKeywords');
-            const progressBarFill = document.getElementById('progressBarFill');
-            const progressText = document.getElementById('progressText');
 
             try {
                 if (!fileInput.files[0]) {
                     throw new Error('Please select a file');
                 }
-                if (!topicInput.value) {
+                if (!topicInput.value.trim()) {
                     throw new Error('Please enter a topic');
                 }
 
                 // Reset UI
+                isProcessing = true;
                 analyzeBtn.disabled = true;
                 downloadBtn.disabled = true;
                 resultDiv.style.display = 'none';
                 loadingUI.style.display = 'block';
-                processingKeywords.innerHTML = '';
-                progressBarFill.style.width = '0%';
-                progressText.textContent = '0%';
-                isProcessing = true;
+                document.getElementById('processingKeywords').innerHTML = '';
+                document.getElementById('progressBarFill').style.width = '0%';
+                document.getElementById('progressText').textContent = '0%';
 
+                // Setup SSE before sending file
+                setupEventSource();
+
+                // Send file for analysis
                 const formData = new FormData();
                 formData.append('file', fileInput.files[0]);
                 formData.append('topic', topicInput.value);
 
-                // Start analysis
-                const response = await fetch('/api/analyze-bulk', {
+                const response = await fetch('/api/analyze', {
                     method: 'POST',
                     body: formData
                 });
@@ -698,9 +660,6 @@
                 if (!response.ok) {
                     throw new Error('Failed to start analysis');
                 }
-
-                // Start polling for status
-                startPolling();
 
             } catch (error) {
                 console.error('Analysis error:', error);
@@ -710,81 +669,116 @@
             }
         }
 
-        function startPolling() {
-            if (pollInterval) {
-                clearInterval(pollInterval);
+        function setupEventSource() {
+            if (eventSource) {
+                eventSource.close();
             }
 
-            pollInterval = setInterval(async () => {
+            eventSource = new EventSource('/api/progress');
+
+            eventSource.onopen = () => {
+                console.log('SSE connection established');
+            };
+
+            eventSource.onmessage = (event) => {
                 try {
-                    const response = await fetch('/api/status');
-                    if (!response.ok) {
-                        throw new Error('Failed to fetch status');
-                    }
+                    const data = JSON.parse(event.data);
+                    console.log('Received event:', data);
 
-                    const data = await response.json();
-                    updateUI(data);
+                    switch (data.type) {
+                        case 'connected':
+                            console.log('Connected to server');
+                            break;
 
-                    if (data.status === 'completed' || data.status === 'error') {
-                        stopPolling();
+                        case 'processing':
+                            updateKeywordStatus(data.keyword, 'Processing');
+                            break;
+
+                        case 'progress':
+                            updateProgress(data);
+                            break;
+
+                        case 'complete':
+                            handleComplete(data);
+                            break;
+
+                        case 'error':
+                            handleError(data);
+                            break;
                     }
                 } catch (error) {
-                    console.error('Polling error:', error);
-                    showError('Error checking progress. Please refresh the page.');
-                    stopPolling();
+                    console.error('Error processing event:', error);
                 }
-            }, POLL_INTERVAL);
+            };
+
+            eventSource.onerror = (error) => {
+                console.error('SSE Error:', error);
+                if (isProcessing) {
+                    // Only show error if we're actually processing
+                    showError('Connection lost. The analysis will continue in the background.');
+                }
+            };
         }
 
-        function stopPolling() {
-            if (pollInterval) {
-                clearInterval(pollInterval);
-                pollInterval = null;
-            }
-            isProcessing = false;
-            document.getElementById('analyzeBtn').disabled = false;
-        }
-
-        function updateUI(data) {
+        function updateProgress(data) {
             const progressBarFill = document.getElementById('progressBarFill');
             const progressText = document.getElementById('progressText');
+            const processedKeywords = document.getElementById('processedKeywords');
+            const remainingKeywords = document.getElementById('remainingKeywords');
+            const totalKeywords = document.getElementById('totalKeywords');
+
+            progressBarFill.style.width = `${data.percentComplete}%`;
+            progressText.textContent = `${data.percentComplete}%`;
+            
+            if (data.total) {
+                totalKeywords.textContent = data.total;
+                processedKeywords.textContent = data.processed;
+                remainingKeywords.textContent = data.total - data.processed;
+            }
+        }
+
+        function updateKeywordStatus(keyword, status) {
             const processingKeywords = document.getElementById('processingKeywords');
-            const downloadBtn = document.getElementById('downloadBtn');
-
-            // Update progress
-            const progress = Math.round((data.processedCount / data.totalKeywords) * 100);
-            progressBarFill.style.width = `${progress}%`;
-            progressText.textContent = `${progress}%`;
-
-            // Update current keyword
-            if (data.currentKeyword && !document.querySelector(`[data-keyword="${data.currentKeyword}"]`)) {
+            
+            if (!document.querySelector(`[data-keyword="${keyword}"]`)) {
                 const keywordItem = document.createElement('div');
                 keywordItem.className = 'keyword-item';
-                keywordItem.setAttribute('data-keyword', data.currentKeyword);
+                keywordItem.setAttribute('data-keyword', keyword);
                 keywordItem.innerHTML = `
                     <div class="keyword-text">
                         <i class="fas fa-keyboard"></i>
-                        ${data.currentKeyword}
+                        ${keyword}
                     </div>
                     <div class="keyword-status">
-                        <span class="status-badge processing">Processing</span>
+                        <span class="status-badge ${status.toLowerCase()}">${status}</span>
                     </div>
                 `;
                 processingKeywords.insertBefore(keywordItem, processingKeywords.firstChild);
             }
+        }
 
-            // Handle completion
-            if (data.status === 'completed') {
-                downloadBtn.disabled = false;
-                showSuccess('Analysis completed successfully!');
-            } else if (data.status === 'error') {
-                showError('Analysis failed. Please try again.');
+        function handleComplete(data) {
+            isProcessing = false;
+            if (eventSource) {
+                eventSource.close();
             }
+            document.getElementById('analyzeBtn').disabled = false;
+            document.getElementById('downloadBtn').disabled = false;
+            showSuccess(data.message || 'Analysis completed successfully!');
+        }
+
+        function handleError(data) {
+            isProcessing = false;
+            if (eventSource) {
+                eventSource.close();
+            }
+            document.getElementById('analyzeBtn').disabled = false;
+            showError(data.message || 'An error occurred');
         }
 
         async function downloadResults() {
             try {
-                const response = await fetch('/api/download-results');
+                const response = await fetch('/api/download');
                 if (!response.ok) {
                     throw new Error('Download failed');
                 }
