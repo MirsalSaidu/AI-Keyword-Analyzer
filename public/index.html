@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keyword Analyzer Pro</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --success: #16a34a;
+            --error: #dc2626;
+            --warning: #ca8a04;
+            --background: #f8fafc;
+            --card: #ffffff;
+            --text: #1e293b;
+            --text-light: #64748b;
+            --border: #e2e8f0;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--background);
+            color: var(--text);
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .header p {
+            color: var(--text-light);
+        }
+
+        .card {
+            background: var(--card);
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            padding: 2rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .form-group label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 0.5rem;
+            color: var(--text);
+        }
+
+        .form-group input[type="text"] {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            font-size: 1rem;
+            transition: all 0.2s;
+        }
+
+        .form-group input[type="text"]:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .file-upload {
+            border: 2px dashed var(--border);
+            border-radius: 6px;
+            padding: 2rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .file-upload:hover {
+            border-color: var(--primary);
+        }
+
+        .file-upload i {
+            font-size: 2rem;
+            color: var(--primary);
+            margin-bottom: 1rem;
+        }
+
+        .file-upload p {
+            color: var(--text-light);
+            margin-bottom: 0.5rem;
+        }
+
+        .file-name {
+            color: var(--primary);
+            font-weight: 500;
+            margin-top: 0.5rem;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 1rem;
+            margin-top: 2rem;
+        }
+
+        .btn {
+            flex: 1;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+
+        .btn-secondary {
+            background: white;
+            color: var(--primary);
+            border: 1px solid var(--primary);
+        }
+
+        .btn-secondary:hover {
+            background: var(--background);
+        }
+
+        .btn:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+        }
+
+        #result {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border-radius: 6px;
+            font-weight: 500;
+        }
+
+        .success {
+            background: rgba(22, 163, 74, 0.1);
+            color: var(--success);
+            border: 1px solid var(--success);
+        }
+
+        .error {
+            background: rgba(220, 38, 38, 0.1);
+            color: var(--error);
+            border: 1px solid var(--error);
+        }
+
+        .loading {
+            background: rgba(203, 213, 225, 0.1);
+            color: var(--text-light);
+            border: 1px solid var(--border);
+        }
+
+        .progress {
+            margin-top: 1rem;
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: var(--primary);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .spinner {
+            animation: spin 1s linear infinite;
+            margin-right: 0.5rem;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        /* Enhanced Loading Animation Styles */
+        .loading-container {
+            text-align: center;
+            padding: 2rem;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            position: relative;
+            width: 80px;
+            height: 80px;
+        }
+
+        .loading-spinner div {
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--primary);
+            animation: loading-spinner 1.2s linear infinite;
+        }
+
+        .loading-spinner div:nth-child(1) {
+            top: 8px;
+            left: 8px;
+            animation-delay: 0s;
+        }
+
+        .loading-spinner div:nth-child(2) {
+            top: 8px;
+            left: 32px;
+            animation-delay: -0.4s;
+        }
+
+        .loading-spinner div:nth-child(3) {
+            top: 8px;
+            left: 56px;
+            animation-delay: -0.8s;
+        }
+
+        .loading-spinner div:nth-child(4) {
+            top: 32px;
+            left: 8px;
+            animation-delay: -0.4s;
+        }
+
+        .loading-spinner div:nth-child(5) {
+            top: 32px;
+            left: 32px;
+            animation-delay: -0.8s;
+        }
+
+        .loading-spinner div:nth-child(6) {
+            top: 32px;
+            left: 56px;
+            animation-delay: -1.2s;
+        }
+
+        .loading-spinner div:nth-child(7) {
+            top: 56px;
+            left: 8px;
+            animation-delay: -0.8s;
+        }
+
+        .loading-spinner div:nth-child(8) {
+            top: 56px;
+            left: 32px;
+            animation-delay: -1.2s;
+        }
+
+        .loading-spinner div:nth-child(9) {
+            top: 56px;
+            left: 56px;
+            animation-delay: -1.6s;
+        }
+
+        @keyframes loading-spinner {
+            0%, 100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+            50% {
+                opacity: 0.5;
+                transform: scale(0.7);
+            }
+        }
+
+        .loading-text {
+            margin-top: 1rem;
+            color: var(--primary);
+            font-weight: 500;
+        }
+
+        .loading-progress {
+            margin-top: 1rem;
+            text-align: center;
+            font-size: 0.875rem;
+            color: var(--text-light);
+        }
+
+        .progress {
+            margin-top: 1rem;
+            height: 8px;
+            background: var(--border);
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary) 0%, #60a5fa 100%);
+            width: 0%;
+            transition: width 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-bar::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(
+                90deg,
+                rgba(255,255,255,0) 0%,
+                rgba(255,255,255,0.3) 50%,
+                rgba(255,255,255,0) 100%
+            );
+            animation: shimmer 1.5s infinite;
+        }
+
+        @keyframes shimmer {
+            0% {
+                transform: translateX(-100%);
+            }
+            100% {
+                transform: translateX(100%);
+            }
+        }
+
+        .status-steps {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 2rem;
+            position: relative;
+        }
+
+        .status-step {
+            flex: 1;
+            text-align: center;
+            position: relative;
+        }
+
+        .step-dot {
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            background: var(--border);
+            margin: 0 auto 0.5rem;
+            position: relative;
+            z-index: 1;
+            transition: all 0.3s ease;
+        }
+
+        .step-dot.active {
+            background: var(--primary);
+            box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.2);
+        }
+
+        .step-dot.completed {
+            background: var(--success);
+        }
+
+        .step-label {
+            font-size: 0.875rem;
+            color: var(--text-light);
+        }
+
+        .step-label.active {
+            color: var(--primary);
+            font-weight: 500;
+        }
+
+        .step-label.completed {
+            color: var(--success);
+            font-weight: 500;
+        }
+
+        .processing-keywords {
+            margin-top: 1rem;
+            max-height: 200px;
+            overflow-y: auto;
+            background: white;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+        }
+
+        .keyword-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.5rem;
+            border-bottom: 1px solid var(--border);
+            animation: slideIn 0.3s ease;
+        }
+
+        .keyword-item:last-child {
+            border-bottom: none;
+        }
+
+        .keyword-text {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .keyword-status {
+            font-size: 0.875rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .status-badge.processing {
+            background: rgba(37, 99, 235, 0.1);
+            color: var(--primary);
+        }
+
+        .status-badge.done {
+            background: rgba(22, 163, 74, 0.1);
+            color: var(--success);
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .stats-container {
+            display: flex;
+            justify-content: space-around;
+            margin: 1rem 0;
+            padding: 1rem;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--primary);
+        }
+
+        .stat-label {
+            font-size: 0.875rem;
+            color: var(--text-light);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Keyword Analyzer Pro</h1>
+            <p>Upload your keywords and get instant relevance analysis</p>
+        </div>
+
+        <div class="card">
+            <div class="form-group">
+                <label for="topic">Analysis Topic</label>
+                <input type="text" id="topic" placeholder="Enter your topic (e.g., 'Digital Marketing')" required>
+            </div>
+
+            <div class="file-upload" onclick="document.getElementById('file').click()">
+                <input type="file" id="file" accept=".xlsx,.xls" style="display: none" onchange="updateFileName()">
+                <i class="fas fa-cloud-upload-alt"></i>
+                <p>Drag and drop your Excel file here or click to browse</p>
+                <p class="file-name" id="fileName">No file selected</p>
+            </div>
+
+            <div class="button-group">
+                <button class="btn btn-primary" onclick="analyzeFile()" id="analyzeBtn">
+                    <i class="fas fa-search"></i>
+                    Analyze Keywords
+                </button>
+                <button class="btn btn-secondary" onclick="downloadResults()" id="downloadBtn" disabled>
+                    <i class="fas fa-download"></i>
+                    Download Results
+                </button>
+            </div>
+
+            <div id="result"></div>
+            <div id="loadingUI" style="display: none;">
+                <div class="loading-container">
+                    <div class="loading-spinner">
+                        <div></div>
+                        <div></div>
+                        <div></div>
+                        <div></div>
+                        <div></div>
+                        <div></div>
+                        <div></div>
+                        <div></div>
+                        <div></div>
+                    </div>
+                    <div class="loading-text">Analyzing Keywords</div>
+                    <div class="loading-progress">Processing... <span id="progressText">0%</span></div>
+                    <div class="progress">
+                        <div class="progress-bar" id="progressBarFill"></div>
+                    </div>
+                    <div class="status-steps">
+                        <div class="status-step">
+                            <div class="step-dot active"></div>
+                            <div class="step-label active">Processing</div>
+                        </div>
+                        <div class="status-step">
+                            <div class="step-dot"></div>
+                            <div class="step-label">Analyzing</div>
+                        </div>
+                        <div class="status-step">
+                            <div class="step-dot"></div>
+                            <div class="step-label">Completing</div>
+                        </div>
+                    </div>
+                    <div class="stats-container">
+                        <div class="stat-item">
+                            <div class="stat-value" id="totalKeywords">0</div>
+                            <div class="stat-label">Total Keywords</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="processedKeywords">0</div>
+                            <div class="stat-label">Processed</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value" id="remainingKeywords">0</div>
+                            <div class="stat-label">Remaining</div>
+                        </div>
+                    </div>
+                    <div class="processing-keywords" id="processingKeywords">
+                        <!-- Keywords will be added here dynamically -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function analyzeFile() {
+            const fileInput = document.getElementById('file');
+            const topicInput = document.getElementById('topic');
+            const resultDiv = document.getElementById('result');
+            const loadingUI = document.getElementById('loadingUI');
+            const analyzeBtn = document.getElementById('analyzeBtn');
+            const downloadBtn = document.getElementById('downloadBtn');
+            const processingKeywords = document.getElementById('processingKeywords');
+            const totalKeywordsEl = document.getElementById('totalKeywords');
+            const processedKeywordsEl = document.getElementById('processedKeywords');
+            const remainingKeywordsEl = document.getElementById('remainingKeywords');
+            const progressBarFill = document.getElementById('progressBarFill');
+            const progressText = document.getElementById('progressText');
+
+            const processedKeywordSet = new Set();
+            let isProcessing = false;
+
+            try {
+                if (!fileInput.files[0]) {
+                    throw new Error('Please select a file');
+                }
+                if (!topicInput.value) {
+                    throw new Error('Please enter a topic');
+                }
+
+                // Reset UI
+                analyzeBtn.disabled = true;
+                downloadBtn.disabled = true;
+                resultDiv.style.display = 'none';
+                loadingUI.style.display = 'block';
+                processingKeywords.innerHTML = '';
+                progressBarFill.style.width = '0%';
+                progressText.textContent = '0%';
+                processedKeywordSet.clear();
+                isProcessing = true;
+
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                formData.append('topic', topicInput.value);
+
+                // Start analysis with relative path
+                fetch('/api/analyze-bulk', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                // Set up SSE with relative path
+                const eventSource = new EventSource('/api/analysis-progress');
+                
+                eventSource.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+
+                    switch(data.type) {
+                        case 'start':
+                            totalKeywordsEl.textContent = data.total;
+                            remainingKeywordsEl.textContent = data.total;
+                            processedKeywordsEl.textContent = '0';
+                            break;
+
+                        case 'processing':
+                        case 'completed':
+                            if (!processedKeywordSet.has(data.keyword)) {
+                                processedKeywordSet.add(data.keyword);
+                                const keywordItem = document.createElement('div');
+                                keywordItem.className = 'keyword-item';
+                                keywordItem.setAttribute('data-keyword', data.keyword);
+                                keywordItem.innerHTML = `
+                                    <div class="keyword-text">
+                                        <i class="fas fa-keyboard"></i>
+                                        ${data.keyword}
+                                    </div>
+                                    <div class="keyword-status">
+                                        <span class="status-badge ${data.status.toLowerCase()}">
+                                            ${data.status}
+                                        </span>
+                                    </div>
+                                `;
+                                processingKeywords.insertBefore(keywordItem, processingKeywords.firstChild);
+                            } else {
+                                updateKeywordStatus(data.keyword, data.status);
+                            }
+                            break;
+
+                        case 'progress':
+                            updateProgress(data.processed, data.total);
+                            break;
+
+                        case 'complete':
+                            isProcessing = false;
+                            eventSource.close();
+                            downloadBtn.disabled = false;
+                            showCompletionMessage(data.message);
+                            break;
+
+                        case 'error':
+                            eventSource.close();
+                            throw new Error(data.message);
+                    }
+                };
+
+                eventSource.onerror = (error) => {
+                    console.error('SSE Error:', error);
+                    eventSource.close();
+                    if (isProcessing) {
+                        showError('Connection lost. Please try again.');
+                    }
+                };
+
+            } catch (error) {
+                showError(error.message);
+            }
+        }
+
+        function updateFileName() {
+            const fileInput = document.getElementById('file');
+            const fileName = document.getElementById('fileName');
+            if (fileInput.files.length > 0) {
+                fileName.textContent = fileInput.files[0].name;
+            } else {
+                fileName.textContent = 'No file selected';
+            }
+        }
+
+        function updateKeywordStatus(keyword, status) {
+            const item = document.querySelector(`[data-keyword="${keyword}"]`);
+            if (item) {
+                const statusBadge = item.querySelector('.status-badge');
+                statusBadge.className = `status-badge ${status.toLowerCase()}`;
+                statusBadge.textContent = status;
+            }
+        }
+
+        function updateProgress(processed, total) {
+            const progress = Math.round((processed / total) * 100);
+            document.getElementById('progressBarFill').style.width = `${progress}%`;
+            document.getElementById('progressText').textContent = `${progress}%`;
+            document.getElementById('processedKeywords').textContent = processed;
+            document.getElementById('remainingKeywords').textContent = total - processed;
+        }
+
+        function showCompletionMessage(message) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'success';
+            resultDiv.innerHTML = `
+                <i class="fas fa-check-circle"></i>
+                ${message}
+                <div class="completion-time">
+                    Completed at ${new Date().toLocaleTimeString()}
+                </div>
+            `;
+        }
+
+        function showError(message) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'error';
+            resultDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> Error: ${message}`;
+            document.getElementById('analyzeBtn').disabled = false;
+        }
+
+        async function downloadResults() {
+            const resultDiv = document.getElementById('result');
+            try {
+                resultDiv.className = 'loading';
+                resultDiv.innerHTML = '<i class="fas fa-spinner spinner"></i> Preparing download...';
+
+                const response = await fetch('/api/download-results');
+                if (!response.ok) {
+                    throw new Error('Download failed');
+                }
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'keyword-analysis.xlsx';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+
+                resultDiv.className = 'success';
+                resultDiv.innerHTML = '<i class="fas fa-check-circle"></i> Download completed!';
+
+            } catch (error) {
+                resultDiv.className = 'error';
+                resultDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> Download error: ${error.message}`;
+                console.error('Download error:', error);
+            }
+        }
+    </script>
+</body>
+</html> 
