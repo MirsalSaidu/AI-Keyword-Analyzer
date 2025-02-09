@@ -10,36 +10,51 @@ require('dotenv').config();
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
+// Constants for timing and batches
+const BATCH_SIZE = 10; // Increased batch size
+const DELAY_BETWEEN_BATCHES = 300; // Reduced delay (ms)
+const REQUEST_TIMEOUT = 300000; // 5 minutes timeout
+const KEEP_ALIVE_TIMEOUT = 305000; // Slightly longer than request timeout
+
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.static(path.join(__dirname, '../public')));
 
+// Configure request timeouts
+app.use((req, res, next) => {
+    res.setTimeout(REQUEST_TIMEOUT, () => {
+        res.status(408).send('Request timeout');
+    });
+    next();
+});
+
 // Constants
-const BATCH_SIZE = 5;
-const DELAY_BETWEEN_BATCHES = 500;
 const clients = new Map();
 
-// Modified SSE setup with heartbeat
+// Modified SSE setup with longer timeouts
 app.get('/api/analysis-progress', (req, res) => {
     const clientId = Date.now().toString(36) + Math.random().toString(36).substr(2);
     
+    req.socket.setTimeout(KEEP_ALIVE_TIMEOUT);
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
-        'Access-Control-Allow-Origin': '*'
+        'Access-Control-Allow-Origin': '*',
+        'X-Accel-Buffering': 'no' // Disable proxy buffering
     });
 
     // Send initial connection message
     res.write('data: {"type": "connected"}\n\n');
 
-    // Set up heartbeat to keep connection alive
+    // Heartbeat every 30 seconds
     const heartbeat = setInterval(() => {
         if (clients.has(clientId)) {
             res.write('data: {"type": "heartbeat"}\n\n');
         }
-    }, 30000); // Send heartbeat every 30 seconds
+    }, 30000);
 
     clients.set(clientId, res);
 
@@ -62,7 +77,7 @@ function sendProgressUpdate(data) {
     });
 }
 
-// Keyword analysis function
+// Modified analyze keyword function with timeout
 async function analyzeKeyword(keyword, matchType, topic) {
     try {
         sendProgressUpdate({
@@ -70,6 +85,9 @@ async function analyzeKeyword(keyword, matchType, topic) {
             keyword,
             status: 'Processing'
         });
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 60000); // 1 minute timeout per keyword
 
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
@@ -92,8 +110,11 @@ async function analyzeKeyword(keyword, matchType, topic) {
                 }],
                 temperature: 0.1,
                 max_tokens: 5
-            })
+            }),
+            signal: controller.signal
         });
+
+        clearTimeout(timeout);
 
         if (!response.ok) {
             throw new Error(`API error: ${response.status}`);
@@ -125,10 +146,9 @@ async function analyzeKeyword(keyword, matchType, topic) {
     }
 }
 
-// Main analysis endpoint
+// Modified bulk analysis endpoint with chunking
 app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
     try {
-        // Validate input
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
@@ -136,7 +156,6 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
             return res.status(400).json({ error: 'Topic is required' });
         }
 
-        // Process Excel file
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(req.file.buffer);
         const worksheet = workbook.getWorksheet(1);
@@ -154,26 +173,25 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
             }
         });
 
-        // Initialize progress
         sendProgressUpdate({
             type: 'start',
             total: keywords.length,
             message: 'Starting analysis...'
         });
 
-        // Process keywords in batches
         const results = [];
         let processedCount = 0;
 
+        // Process in larger chunks with controlled concurrency
         for (let i = 0; i < keywords.length; i += BATCH_SIZE) {
             const batch = keywords.slice(i, Math.min(i + BATCH_SIZE, keywords.length));
             
-            const batchResults = await Promise.all(
-                batch.map(({ keyword, matchType }) => 
-                    analyzeKeyword(keyword, matchType, req.body.topic)
-                )
+            const batchPromises = batch.map(({ keyword, matchType }) => 
+                analyzeKeyword(keyword, matchType, req.body.topic)
+                    .catch(error => ({ keyword, matchType, status: 'error', error: error.message }))
             );
-            
+
+            const batchResults = await Promise.all(batchPromises);
             results.push(...batchResults);
             processedCount += batch.length;
 
@@ -189,7 +207,6 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
             }
         }
 
-        // Send completion status
         sendProgressUpdate({
             type: 'complete',
             processed: keywords.length,
