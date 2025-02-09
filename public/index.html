@@ -774,35 +774,47 @@
         }
 
         async function downloadResults() {
-            const resultDiv = document.getElementById('result');
             try {
-                resultDiv.className = 'loading';
-                resultDiv.innerHTML = '<i class="fas fa-spinner spinner"></i> Preparing download...';
-
                 const response = await fetch('/api/download-results');
+                
                 if (!response.ok) {
-                    throw new Error('Download failed');
+                    const errorData = await response.json();
+                    throw new Error(errorData.message || 'Download failed');
                 }
 
+                // Get the filename from the Content-Disposition header if available
+                const contentDisposition = response.headers.get('Content-Disposition');
+                let filename = 'keyword-analysis-results.xlsx';
+                if (contentDisposition) {
+                    const filenameMatch = contentDisposition.match(/filename=(.+)/);
+                    if (filenameMatch) {
+                        filename = filenameMatch[1];
+                    }
+                }
+
+                // Convert response to blob
                 const blob = await response.blob();
+                
+                // Create download link
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'keyword-analysis.xlsx';
+                a.download = filename;
                 document.body.appendChild(a);
                 a.click();
+                
+                // Cleanup
                 window.URL.revokeObjectURL(url);
                 document.body.removeChild(a);
 
-                resultDiv.className = 'success';
-                resultDiv.innerHTML = '<i class="fas fa-check-circle"></i> Download completed!';
-
             } catch (error) {
-                resultDiv.className = 'error';
-                resultDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> Download error: ${error.message}`;
                 console.error('Download error:', error);
+                showError(`Download error: ${error.message}`);
             }
         }
+
+        // Update the download button click handler
+        document.getElementById('downloadBtn').addEventListener('click', downloadResults);
     </script>
 </body>
 </html> 
