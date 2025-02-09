@@ -3,6 +3,7 @@ const multer = require('multer');
 const ExcelJS = require('exceljs');
 const fetch = require('node-fetch');
 const cors = require('cors');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -11,7 +12,14 @@ const upload = multer({ storage: multer.memoryStorage() });
 // Enable CORS for all routes
 app.use(cors());
 app.use(express.json());
-app.use(express.static('public'));
+
+// Serve static files from the public directory
+app.use(express.static(path.join(__dirname, '../public')));
+
+// Ensure the root path serves index.html
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, '../public/index.html'));
+});
 
 let analysisResults = [];
 const clients = new Map();
@@ -258,6 +266,11 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log('OpenRouter API Key:', process.env.OPENROUTER_API_KEY ? 'Configured' : 'Missing');
+});
+
+// Handle 404s
+app.use((req, res) => {
+    res.status(404).json({ error: 'Not Found' });
 });
 
 // Export the Express API
