@@ -652,103 +652,9 @@
     </div>
 
     <script>
-        let eventSource = null;
-        let reconnectAttempts = 0;
-        const MAX_RECONNECT_ATTEMPTS = 5;
-        const RECONNECT_DELAY = 3000;
         let isProcessing = false;
-        let lastEventTime = Date.now();
-
-        function setupEventSource() {
-            if (eventSource) {
-                eventSource.close();
-            }
-
-            eventSource = new EventSource('/api/analysis-progress');
-            
-            eventSource.onopen = () => {
-                console.log('SSE connection established');
-                reconnectAttempts = 0;
-                lastEventTime = Date.now();
-            };
-
-            eventSource.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    console.log('Received event:', data);
-                    lastEventTime = Date.now();
-
-                    // Handle different event types
-                    switch(data.type) {
-                        case 'connected':
-                            console.log('Connected to server with ID:', data.clientId);
-                            break;
-                        case 'heartbeat':
-                            // Silent acknowledgment of heartbeat
-                            break;
-                        case 'start':
-                            handleStart(data);
-                            break;
-                        case 'progress':
-                            handleProgress(data);
-                            break;
-                        case 'complete':
-                            handleComplete(data);
-                            isProcessing = false;
-                            eventSource.close();
-                            break;
-                        case 'error':
-                            handleError(data);
-                            break;
-                    }
-                } catch (error) {
-                    console.error('Error processing event:', error);
-                }
-            };
-
-            eventSource.onerror = (error) => {
-                console.error('SSE Error:', error);
-                eventSource.close();
-                
-                if (isProcessing && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                    console.log(`Reconnecting... Attempt ${reconnectAttempts + 1}`);
-                    reconnectAttempts++;
-                    setTimeout(setupEventSource, RECONNECT_DELAY * reconnectAttempts);
-                } else if (isProcessing) {
-                    showError('Connection lost. The analysis will continue in the background.');
-                    // Optional: Add a manual reconnect button
-                    showReconnectButton();
-                }
-            };
-
-            // Monitor connection health
-            const healthCheck = setInterval(() => {
-                if (isProcessing && Date.now() - lastEventTime > 30000) { // 30 seconds
-                    console.log('No events received for 30 seconds, reconnecting...');
-                    eventSource.close();
-                    setupEventSource();
-                }
-            }, 10000);
-
-            return () => {
-                clearInterval(healthCheck);
-                if (eventSource) {
-                    eventSource.close();
-                }
-            };
-        }
-
-        function showReconnectButton() {
-            const reconnectBtn = document.createElement('button');
-            reconnectBtn.textContent = 'Reconnect';
-            reconnectBtn.className = 'reconnect-btn';
-            reconnectBtn.onclick = () => {
-                reconnectAttempts = 0;
-                setupEventSource();
-                reconnectBtn.remove();
-            };
-            document.getElementById('result').appendChild(reconnectBtn);
-        }
+        let pollInterval;
+        const POLL_INTERVAL = 2000; // Poll every 2 seconds
 
         async function analyzeFile() {
             const fileInput = document.getElementById('file');
@@ -758,13 +664,8 @@
             const analyzeBtn = document.getElementById('analyzeBtn');
             const downloadBtn = document.getElementById('downloadBtn');
             const processingKeywords = document.getElementById('processingKeywords');
-            const totalKeywordsEl = document.getElementById('totalKeywords');
-            const processedKeywordsEl = document.getElementById('processedKeywords');
-            const remainingKeywordsEl = document.getElementById('remainingKeywords');
             const progressBarFill = document.getElementById('progressBarFill');
             const progressText = document.getElementById('progressText');
-
-            const processedKeywordSet = new Set();
 
             try {
                 if (!fileInput.files[0]) {
@@ -782,7 +683,6 @@
                 processingKeywords.innerHTML = '';
                 progressBarFill.style.width = '0%';
                 progressText.textContent = '0%';
-                processedKeywordSet.clear();
                 isProcessing = true;
 
                 const formData = new FormData();
@@ -799,13 +699,124 @@
                     throw new Error('Failed to start analysis');
                 }
 
-                setupEventSource();
+                // Start polling for status
+                startPolling();
 
             } catch (error) {
                 console.error('Analysis error:', error);
                 showError(error.message);
                 isProcessing = false;
+                analyzeBtn.disabled = false;
             }
+        }
+
+        function startPolling() {
+            if (pollInterval) {
+                clearInterval(pollInterval);
+            }
+
+            pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/api/status');
+                    if (!response.ok) {
+                        throw new Error('Failed to fetch status');
+                    }
+
+                    const data = await response.json();
+                    updateUI(data);
+
+                    if (data.status === 'completed' || data.status === 'error') {
+                        stopPolling();
+                    }
+                } catch (error) {
+                    console.error('Polling error:', error);
+                    showError('Error checking progress. Please refresh the page.');
+                    stopPolling();
+                }
+            }, POLL_INTERVAL);
+        }
+
+        function stopPolling() {
+            if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+            }
+            isProcessing = false;
+            document.getElementById('analyzeBtn').disabled = false;
+        }
+
+        function updateUI(data) {
+            const progressBarFill = document.getElementById('progressBarFill');
+            const progressText = document.getElementById('progressText');
+            const processingKeywords = document.getElementById('processingKeywords');
+            const downloadBtn = document.getElementById('downloadBtn');
+
+            // Update progress
+            const progress = Math.round((data.processedCount / data.totalKeywords) * 100);
+            progressBarFill.style.width = `${progress}%`;
+            progressText.textContent = `${progress}%`;
+
+            // Update current keyword
+            if (data.currentKeyword && !document.querySelector(`[data-keyword="${data.currentKeyword}"]`)) {
+                const keywordItem = document.createElement('div');
+                keywordItem.className = 'keyword-item';
+                keywordItem.setAttribute('data-keyword', data.currentKeyword);
+                keywordItem.innerHTML = `
+                    <div class="keyword-text">
+                        <i class="fas fa-keyboard"></i>
+                        ${data.currentKeyword}
+                    </div>
+                    <div class="keyword-status">
+                        <span class="status-badge processing">Processing</span>
+                    </div>
+                `;
+                processingKeywords.insertBefore(keywordItem, processingKeywords.firstChild);
+            }
+
+            // Handle completion
+            if (data.status === 'completed') {
+                downloadBtn.disabled = false;
+                showSuccess('Analysis completed successfully!');
+            } else if (data.status === 'error') {
+                showError('Analysis failed. Please try again.');
+            }
+        }
+
+        async function downloadResults() {
+            try {
+                const response = await fetch('/api/download-results');
+                if (!response.ok) {
+                    throw new Error('Download failed');
+                }
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'keyword-analysis-results.xlsx';
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+
+            } catch (error) {
+                console.error('Download error:', error);
+                showError(`Download error: ${error.message}`);
+            }
+        }
+
+        function showError(message) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'error';
+            resultDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> ${message}`;
+        }
+
+        function showSuccess(message) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'success';
+            resultDiv.innerHTML = `<i class="fas fa-check-circle"></i> ${message}`;
         }
 
         function updateFileName() {
@@ -817,164 +828,6 @@
                 fileName.textContent = 'No file selected';
             }
         }
-
-        function updateKeywordStatus(keyword, status) {
-            const item = document.querySelector(`[data-keyword="${keyword}"]`);
-            if (item) {
-                const statusBadge = item.querySelector('.status-badge');
-                statusBadge.className = `status-badge ${status.toLowerCase()}`;
-                statusBadge.textContent = status;
-            }
-        }
-
-        function updateProgress(processed, total) {
-            const progress = Math.round((processed / total) * 100);
-            document.getElementById('progressBarFill').style.width = `${progress}%`;
-            document.getElementById('progressText').textContent = `${progress}%`;
-            document.getElementById('processedKeywords').textContent = processed;
-            document.getElementById('remainingKeywords').textContent = total - processed;
-        }
-
-        function showCompletionMessage(message) {
-            const resultDiv = document.getElementById('result');
-            resultDiv.style.display = 'block';
-            resultDiv.className = 'success';
-            resultDiv.innerHTML = `
-                <i class="fas fa-check-circle"></i>
-                ${message}
-                <div class="completion-time">
-                    Completed at ${new Date().toLocaleTimeString()}
-                </div>
-            `;
-        }
-
-        function showError(message) {
-            const resultDiv = document.getElementById('result');
-            resultDiv.style.display = 'block';
-            resultDiv.className = 'error';
-            resultDiv.innerHTML = `<i class="fas fa-exclamation-circle"></i> Error: ${message}`;
-            document.getElementById('analyzeBtn').disabled = false;
-        }
-
-        async function downloadResults() {
-            try {
-                const response = await fetch('/api/download-results');
-                
-                if (!response.ok) {
-                    const errorData = await response.json();
-                    throw new Error(errorData.message || 'Download failed');
-                }
-
-                // Get the filename from the Content-Disposition header if available
-                const contentDisposition = response.headers.get('Content-Disposition');
-                let filename = 'keyword-analysis-results.xlsx';
-                if (contentDisposition) {
-                    const filenameMatch = contentDisposition.match(/filename=(.+)/);
-                    if (filenameMatch) {
-                        filename = filenameMatch[1];
-                    }
-                }
-
-                // Convert response to blob
-                const blob = await response.blob();
-                
-                // Create download link
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = filename;
-                document.body.appendChild(a);
-                a.click();
-                
-                // Cleanup
-                window.URL.revokeObjectURL(url);
-                document.body.removeChild(a);
-
-            } catch (error) {
-                console.error('Download error:', error);
-                showError(`Download error: ${error.message}`);
-            }
-        }
-
-        function handleStart(data) {
-            const totalKeywordsEl = document.getElementById('totalKeywords');
-            const remainingKeywordsEl = document.getElementById('remainingKeywords');
-            const processedKeywordsEl = document.getElementById('processedKeywords');
-
-            totalKeywordsEl.textContent = data.total;
-            remainingKeywordsEl.textContent = data.total;
-            processedKeywordsEl.textContent = '0';
-            
-            console.log('Analysis started:', data);
-        }
-
-        function handleProgress(data) {
-            const processedKeywordsEl = document.getElementById('processedKeywords');
-            const remainingKeywordsEl = document.getElementById('remainingKeywords');
-            const progressBarFill = document.getElementById('progressBarFill');
-            const progressText = document.getElementById('progressText');
-            const processingKeywords = document.getElementById('processingKeywords');
-
-            // Update progress numbers
-            processedKeywordsEl.textContent = data.processed;
-            remainingKeywordsEl.textContent = data.total - data.processed;
-
-            // Update progress bar
-            const progress = Math.round((data.processed / data.total) * 100);
-            progressBarFill.style.width = `${progress}%`;
-            progressText.textContent = `${progress}%`;
-
-            // Update keyword list if provided
-            if (data.keyword && !processedKeywordSet.has(data.keyword)) {
-                processedKeywordSet.add(data.keyword);
-                const keywordItem = document.createElement('div');
-                keywordItem.className = 'keyword-item';
-                keywordItem.setAttribute('data-keyword', data.keyword);
-                keywordItem.innerHTML = `
-                    <div class="keyword-text">
-                        <i class="fas fa-keyboard"></i>
-                        ${data.keyword}
-                    </div>
-                    <div class="keyword-status">
-                        <span class="status-badge ${data.status.toLowerCase()}">
-                            ${data.status}
-                        </span>
-                    </div>
-                `;
-                processingKeywords.insertBefore(keywordItem, processingKeywords.firstChild);
-            }
-
-            console.log('Progress update:', data);
-        }
-
-        function handleComplete(data) {
-            const downloadBtn = document.getElementById('downloadBtn');
-            downloadBtn.disabled = false;
-            
-            showSuccess(data.message || 'Analysis completed successfully!');
-            console.log('Analysis complete:', data);
-        }
-
-        function handleError(data) {
-            showError(data.message || 'An error occurred');
-            console.error('Analysis error:', data);
-        }
-
-        function showSuccess(message) {
-            const resultDiv = document.getElementById('result');
-            resultDiv.style.display = 'block';
-            resultDiv.className = 'success';
-            resultDiv.innerHTML = `
-                <i class="fas fa-check-circle"></i>
-                ${message}
-                <div class="completion-time">
-                    Completed at ${new Date().toLocaleTimeString()}
-                </div>
-            `;
-        }
-
-        // Update the download button click handler
-        document.getElementById('downloadBtn').addEventListener('click', downloadResults);
     </script>
 </body>
 </html> 
