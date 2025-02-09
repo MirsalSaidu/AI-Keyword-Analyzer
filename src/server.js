@@ -33,6 +33,11 @@ app.use((req, res, next) => {
 // Constants
 const clients = new Map();
 
+// Add API key validation
+if (!process.env.OPENROUTER_API_KEY) {
+    console.error('OPENROUTER_API_KEY is not set in environment variables');
+}
+
 // Modified SSE setup with longer timeouts
 app.get('/api/analysis-progress', (req, res) => {
     const clientId = Date.now().toString(36) + Math.random().toString(36).substr(2);
@@ -77,9 +82,11 @@ function sendProgressUpdate(data) {
     });
 }
 
-// Modified analyze keyword function with timeout
+// Modified analyze keyword function with better error handling and logging
 async function analyzeKeyword(keyword, matchType, topic) {
     try {
+        console.log(`Processing keyword: "${keyword}" for topic: "${topic}"`);
+        
         sendProgressUpdate({
             type: 'processing',
             keyword,
@@ -87,16 +94,21 @@ async function analyzeKeyword(keyword, matchType, topic) {
         });
 
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 60000); // 1 minute timeout per keyword
+        const timeout = setTimeout(() => controller.abort(), 60000);
 
-        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        const apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+        const headers = {
+            'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': process.env.VERCEL_URL || 'https://your-vercel-domain.vercel.app',
+            'X-Title': 'Keyword Analyzer'
+        };
+
+        console.log('Sending request to OpenRouter API...');
+        
+        const response = await fetch(apiUrl, {
             method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-                'Content-Type': 'application/json',
-                'HTTP-Referer': process.env.VERCEL_URL || 'http://localhost:3000',
-                'X-Title': 'Keyword Analyzer'
-            },
+            headers: headers,
             body: JSON.stringify({
                 model: 'mistralai/mistral-7b-instruct',
                 messages: [{
@@ -117,14 +129,29 @@ async function analyzeKeyword(keyword, matchType, topic) {
         clearTimeout(timeout);
 
         if (!response.ok) {
-            throw new Error(`API error: ${response.status}`);
+            const errorText = await response.text();
+            console.error('API Response Error:', {
+                status: response.status,
+                statusText: response.statusText,
+                body: errorText
+            });
+            throw new Error(`API error: ${response.status} - ${errorText}`);
         }
 
         const data = await response.json();
+        console.log('API Response:', data);
+
+        if (!data.choices?.[0]?.message?.content) {
+            throw new Error('Invalid API response format');
+        }
+
+        const content = data.choices[0].message.content.toLowerCase().trim();
+        console.log(`Analysis result for "${keyword}": ${content}`);
+
         const result = {
             keyword,
             matchType,
-            status: data.choices?.[0]?.message?.content?.toLowerCase().trim() === 'true'
+            status: content === 'true'
         };
 
         sendProgressUpdate({
@@ -137,24 +164,50 @@ async function analyzeKeyword(keyword, matchType, topic) {
 
     } catch (error) {
         console.error(`Error analyzing "${keyword}":`, error);
+        
+        // Check if it's an API key error
+        if (error.message.includes('401') || error.message.includes('unauthorized')) {
+            console.error('API Key authentication failed');
+            sendProgressUpdate({
+                type: 'error',
+                message: 'API authentication failed. Please check your API key.'
+            });
+        }
+        
         sendProgressUpdate({
             type: 'error',
             keyword,
-            status: 'Error'
+            status: 'Error',
+            message: error.message
         });
-        return { keyword, matchType, status: 'error' };
+        
+        return { 
+            keyword, 
+            matchType, 
+            status: 'error',
+            error: error.message 
+        };
     }
 }
 
-// Modified bulk analysis endpoint with chunking
+// Modified bulk analysis endpoint with better error handling
 app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
     try {
+        // Validate API key first
+        if (!process.env.OPENROUTER_API_KEY) {
+            throw new Error('API key is not configured');
+        }
+
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
         if (!req.body.topic) {
             return res.status(400).json({ error: 'Topic is required' });
         }
+
+        console.log('Starting bulk analysis...');
+        console.log('File size:', req.file.size);
+        console.log('Topic:', req.body.topic);
 
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(req.file.buffer);
@@ -221,14 +274,16 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Analysis error:', error);
+        console.error('Bulk analysis error:', error);
         sendProgressUpdate({
             type: 'error',
             message: error.message
         });
         res.status(500).json({ 
             error: 'Analysis failed', 
-            message: error.message 
+            message: process.env.NODE_ENV === 'production' 
+                ? 'An error occurred during analysis' 
+                : error.message 
         });
     }
 });
