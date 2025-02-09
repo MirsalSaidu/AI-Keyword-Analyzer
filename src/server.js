@@ -85,7 +85,7 @@ function sendProgressUpdate(data) {
 // Modified analyze keyword function with better error handling and logging
 async function analyzeKeyword(keyword, matchType, topic) {
     try {
-        console.log(`Processing keyword: "${keyword}" for topic: "${topic}"`);
+        console.log(`Analyzing keyword: "${keyword}"`);
         
         sendProgressUpdate({
             type: 'processing',
@@ -93,22 +93,14 @@ async function analyzeKeyword(keyword, matchType, topic) {
             status: 'Processing'
         });
 
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 60000);
-
-        const apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
-        const headers = {
-            'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': process.env.VERCEL_URL || 'https://your-vercel-domain.vercel.app',
-            'X-Title': 'Keyword Analyzer'
-        };
-
-        console.log('Sending request to OpenRouter API...');
-        
-        const response = await fetch(apiUrl, {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
-            headers: headers,
+            headers: {
+                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                'Content-Type': 'application/json',
+                'HTTP-Referer': process.env.VERCEL_URL || 'https://keyword-analyzer.vercel.app',
+                'X-Title': 'Keyword Analyzer'
+            },
             body: JSON.stringify({
                 model: 'mistralai/mistral-7b-instruct',
                 messages: [{
@@ -122,37 +114,15 @@ async function analyzeKeyword(keyword, matchType, topic) {
                 }],
                 temperature: 0.1,
                 max_tokens: 5
-            }),
-            signal: controller.signal
+            })
         });
 
-        clearTimeout(timeout);
-
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error('API Response Error:', {
-                status: response.status,
-                statusText: response.statusText,
-                body: errorText
-            });
-            throw new Error(`API error: ${response.status} - ${errorText}`);
+            throw new Error(`API error: ${response.status}`);
         }
 
         const data = await response.json();
-        console.log('API Response:', data);
-
-        if (!data.choices?.[0]?.message?.content) {
-            throw new Error('Invalid API response format');
-        }
-
-        const content = data.choices[0].message.content.toLowerCase().trim();
-        console.log(`Analysis result for "${keyword}": ${content}`);
-
-        const result = {
-            keyword,
-            matchType,
-            status: content === 'true'
-        };
+        console.log(`API response for "${keyword}":`, data);
 
         sendProgressUpdate({
             type: 'completed',
@@ -160,37 +130,24 @@ async function analyzeKeyword(keyword, matchType, topic) {
             status: 'Done'
         });
 
-        return result;
+        return {
+            keyword,
+            matchType,
+            status: data.choices?.[0]?.message?.content?.toLowerCase().trim() === 'true'
+        };
 
     } catch (error) {
         console.error(`Error analyzing "${keyword}":`, error);
-        
-        // Check if it's an API key error
-        if (error.message.includes('401') || error.message.includes('unauthorized')) {
-            console.error('API Key authentication failed');
-            sendProgressUpdate({
-                type: 'error',
-                message: 'API authentication failed. Please check your API key.'
-            });
-        }
-        
         sendProgressUpdate({
             type: 'error',
             keyword,
-            status: 'Error',
-            message: error.message
+            status: 'Error'
         });
-        
-        return { 
-            keyword, 
-            matchType, 
-            status: 'error',
-            error: error.message 
-        };
+        throw error; // Re-throw to handle in the batch processing
     }
 }
 
-// Modified bulk analysis endpoint with better error handling
+// Modified bulk analysis endpoint
 app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
     try {
         // Validate API key first
@@ -206,8 +163,6 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
         }
 
         console.log('Starting bulk analysis...');
-        console.log('File size:', req.file.size);
-        console.log('Topic:', req.body.topic);
 
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.load(req.file.buffer);
@@ -226,64 +181,78 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
             }
         });
 
+        console.log(`Found ${keywords.length} keywords to process`);
+
+        // Send initial total count immediately
         sendProgressUpdate({
             type: 'start',
             total: keywords.length,
             message: 'Starting analysis...'
         });
 
-        const results = [];
-        let processedCount = 0;
-
-        // Process in larger chunks with controlled concurrency
-        for (let i = 0; i < keywords.length; i += BATCH_SIZE) {
-            const batch = keywords.slice(i, Math.min(i + BATCH_SIZE, keywords.length));
-            
-            const batchPromises = batch.map(({ keyword, matchType }) => 
-                analyzeKeyword(keyword, matchType, req.body.topic)
-                    .catch(error => ({ keyword, matchType, status: 'error', error: error.message }))
-            );
-
-            const batchResults = await Promise.all(batchPromises);
-            results.push(...batchResults);
-            processedCount += batch.length;
-
-            sendProgressUpdate({
-                type: 'progress',
-                processed: processedCount,
-                total: keywords.length,
-                percentComplete: Math.round((processedCount / keywords.length) * 100)
-            });
-
-            if (i + BATCH_SIZE < keywords.length) {
-                await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
-            }
-        }
-
-        sendProgressUpdate({
-            type: 'complete',
-            processed: keywords.length,
-            total: keywords.length,
-            message: 'Analysis completed successfully!'
-        });
-
+        // Send immediate response to prevent timeout
         res.json({
             success: true,
-            message: 'Analysis completed successfully',
-            totalKeywords: results.length
+            message: 'Analysis started',
+            totalKeywords: keywords.length
+        });
+
+        // Process keywords after sending response
+        const processKeywords = async () => {
+            const results = [];
+            let processedCount = 0;
+
+            for (let i = 0; i < keywords.length; i += BATCH_SIZE) {
+                const batch = keywords.slice(i, Math.min(i + BATCH_SIZE, keywords.length));
+                console.log(`Processing batch ${i / BATCH_SIZE + 1}/${Math.ceil(keywords.length / BATCH_SIZE)}`);
+
+                for (const { keyword, matchType } of batch) {
+                    try {
+                        const result = await analyzeKeyword(keyword, matchType, req.body.topic);
+                        results.push(result);
+                        processedCount++;
+
+                        sendProgressUpdate({
+                            type: 'progress',
+                            processed: processedCount,
+                            total: keywords.length,
+                            percentComplete: Math.round((processedCount / keywords.length) * 100)
+                        });
+
+                    } catch (error) {
+                        console.error(`Error processing keyword "${keyword}":`, error);
+                        results.push({ keyword, matchType, status: 'error' });
+                        processedCount++;
+                    }
+                }
+
+                if (i + BATCH_SIZE < keywords.length) {
+                    await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
+                }
+            }
+
+            sendProgressUpdate({
+                type: 'complete',
+                processed: keywords.length,
+                total: keywords.length,
+                message: 'Analysis completed successfully!'
+            });
+        };
+
+        // Start processing in the background
+        processKeywords().catch(error => {
+            console.error('Background processing error:', error);
+            sendProgressUpdate({
+                type: 'error',
+                message: error.message
+            });
         });
 
     } catch (error) {
-        console.error('Bulk analysis error:', error);
-        sendProgressUpdate({
-            type: 'error',
-            message: error.message
-        });
+        console.error('Analysis setup error:', error);
         res.status(500).json({ 
-            error: 'Analysis failed', 
-            message: process.env.NODE_ENV === 'production' 
-                ? 'An error occurred during analysis' 
-                : error.message 
+            error: 'Analysis failed to start', 
+            message: error.message 
         });
     }
 });
