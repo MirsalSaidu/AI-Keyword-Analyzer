@@ -20,7 +20,7 @@ const BATCH_SIZE = 5;
 const DELAY_BETWEEN_BATCHES = 500;
 const clients = new Map();
 
-// SSE setup
+// Modified SSE setup with heartbeat
 app.get('/api/analysis-progress', (req, res) => {
     const clientId = Date.now().toString(36) + Math.random().toString(36).substr(2);
     
@@ -31,14 +31,35 @@ app.get('/api/analysis-progress', (req, res) => {
         'Access-Control-Allow-Origin': '*'
     });
 
+    // Send initial connection message
+    res.write('data: {"type": "connected"}\n\n');
+
+    // Set up heartbeat to keep connection alive
+    const heartbeat = setInterval(() => {
+        if (clients.has(clientId)) {
+            res.write('data: {"type": "heartbeat"}\n\n');
+        }
+    }, 30000); // Send heartbeat every 30 seconds
+
     clients.set(clientId, res);
-    req.on('close', () => clients.delete(clientId));
+
+    req.on('close', () => {
+        clients.delete(clientId);
+        clearInterval(heartbeat);
+    });
 });
 
-// Helper function for SSE updates
+// Improved sendProgressUpdate function
 function sendProgressUpdate(data) {
     const message = `data: ${JSON.stringify(data)}\n\n`;
-    clients.forEach(client => client.write(message));
+    clients.forEach((client, clientId) => {
+        try {
+            client.write(message);
+        } catch (error) {
+            console.error(`Error sending to client ${clientId}:`, error);
+            clients.delete(clientId);
+        }
+    });
 }
 
 // Keyword analysis function
