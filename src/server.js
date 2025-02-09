@@ -11,10 +11,11 @@ const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Constants for timing and batches
-const BATCH_SIZE = 10; // Increased batch size
-const DELAY_BETWEEN_BATCHES = 300; // Reduced delay (ms)
+const BATCH_SIZE = 10;
+const DELAY_BETWEEN_BATCHES = 300;
 const REQUEST_TIMEOUT = 300000; // 5 minutes timeout
 const KEEP_ALIVE_TIMEOUT = 305000; // Slightly longer than request timeout
+const SSE_RETRY_TIMEOUT = 15000; // 15 seconds retry timeout
 
 // Middleware
 app.use(cors());
@@ -38,46 +39,73 @@ if (!process.env.OPENROUTER_API_KEY) {
     console.error('OPENROUTER_API_KEY is not set in environment variables');
 }
 
-// Modified SSE setup with longer timeouts
+// Add a variable to store results
+let analysisResults = [];
+
+// Modified SSE setup with better connection handling
 app.get('/api/analysis-progress', (req, res) => {
     const clientId = Date.now().toString(36) + Math.random().toString(36).substr(2);
     
-    req.socket.setTimeout(KEEP_ALIVE_TIMEOUT);
+    // Set headers for better SSE handling
     res.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
         'Access-Control-Allow-Origin': '*',
-        'X-Accel-Buffering': 'no' // Disable proxy buffering
+        'retry': SSE_RETRY_TIMEOUT
     });
 
-    // Send initial connection message
+    // Send initial connection message with retry information
+    res.write(`retry: ${SSE_RETRY_TIMEOUT}\n`);
     res.write('data: {"type": "connected"}\n\n');
 
-    // Heartbeat every 30 seconds
+    // More frequent heartbeat (every 15 seconds)
     const heartbeat = setInterval(() => {
         if (clients.has(clientId)) {
-            res.write('data: {"type": "heartbeat"}\n\n');
+            try {
+                res.write('data: {"type": "heartbeat"}\n\n');
+            } catch (error) {
+                console.error('Heartbeat error:', error);
+                cleanup();
+            }
         }
-    }, 30000);
+    }, 15000);
 
-    clients.set(clientId, res);
+    // Keep connection alive
+    req.socket.setKeepAlive(true);
+    req.socket.setTimeout(0);
 
-    req.on('close', () => {
-        clients.delete(clientId);
+    // Cleanup function
+    const cleanup = () => {
         clearInterval(heartbeat);
+        clients.delete(clientId);
+    };
+
+    // Store client
+    clients.set(clientId, {
+        res,
+        timestamp: Date.now(),
+        cleanup
     });
+
+    // Handle client disconnect
+    req.on('close', cleanup);
+    req.on('end', cleanup);
+    req.on('error', cleanup);
 });
 
 // Improved sendProgressUpdate function
 function sendProgressUpdate(data) {
-    const message = `data: ${JSON.stringify(data)}\n\n`;
+    const now = Date.now();
+    const message = `data: ${JSON.stringify({ ...data, timestamp: now })}\n\n`;
+    
     clients.forEach((client, clientId) => {
         try {
-            client.write(message);
+            client.res.write(message);
         } catch (error) {
             console.error(`Error sending to client ${clientId}:`, error);
-            clients.delete(clientId);
+            client.cleanup();
         }
     });
 }
@@ -197,20 +225,22 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
             totalKeywords: keywords.length
         });
 
-        // Process keywords after sending response
+        // Process keywords with better error handling
         const processKeywords = async () => {
             const results = [];
             let processedCount = 0;
+            let consecutiveErrors = 0;
+            const MAX_CONSECUTIVE_ERRORS = 3;
 
             for (let i = 0; i < keywords.length; i += BATCH_SIZE) {
                 const batch = keywords.slice(i, Math.min(i + BATCH_SIZE, keywords.length));
-                console.log(`Processing batch ${i / BATCH_SIZE + 1}/${Math.ceil(keywords.length / BATCH_SIZE)}`);
 
                 for (const { keyword, matchType } of batch) {
                     try {
                         const result = await analyzeKeyword(keyword, matchType, req.body.topic);
                         results.push(result);
                         processedCount++;
+                        consecutiveErrors = 0; // Reset error counter on success
 
                         sendProgressUpdate({
                             type: 'progress',
@@ -221,15 +251,38 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
 
                     } catch (error) {
                         console.error(`Error processing keyword "${keyword}":`, error);
-                        results.push({ keyword, matchType, status: 'error' });
+                        consecutiveErrors++;
+                        
+                        // Add error result
+                        results.push({ 
+                            keyword, 
+                            matchType, 
+                            status: 'error',
+                            error: error.message 
+                        });
+                        
                         processedCount++;
+
+                        // If too many consecutive errors, pause processing
+                        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                            console.log('Too many consecutive errors, pausing for 30 seconds...');
+                            await new Promise(resolve => setTimeout(resolve, 30000));
+                            consecutiveErrors = 0;
+                        }
                     }
+
+                    // Add small delay between individual keywords
+                    await new Promise(resolve => setTimeout(resolve, 100));
                 }
 
+                // Delay between batches
                 if (i + BATCH_SIZE < keywords.length) {
                     await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_BATCHES));
                 }
             }
+
+            // Store results globally
+            analysisResults = results;
 
             sendProgressUpdate({
                 type: 'complete',
@@ -239,12 +292,12 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
             });
         };
 
-        // Start processing in the background
+        // Start processing with error handling
         processKeywords().catch(error => {
             console.error('Background processing error:', error);
             sendProgressUpdate({
                 type: 'error',
-                message: error.message
+                message: 'Processing failed: ' + error.message
             });
         });
 
@@ -253,6 +306,71 @@ app.post('/api/analyze-bulk', upload.single('file'), async (req, res) => {
         res.status(500).json({ 
             error: 'Analysis failed to start', 
             message: error.message 
+        });
+    }
+});
+
+// Add download endpoint
+app.get('/api/download-results', async (req, res) => {
+    try {
+        if (!analysisResults || analysisResults.length === 0) {
+            return res.status(404).json({ error: 'No results available for download' });
+        }
+
+        // Create a new workbook
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Analysis Results');
+
+        // Add headers
+        worksheet.addRow(['Keyword', 'Match Type', 'Status']);
+
+        // Add data
+        analysisResults.forEach(result => {
+            worksheet.addRow([
+                result.keyword,
+                result.matchType,
+                result.status === true ? 'Relevant' : 
+                result.status === false ? 'Not Relevant' : 
+                'Error'
+            ]);
+        });
+
+        // Style the headers
+        const headerRow = worksheet.getRow(1);
+        headerRow.font = { bold: true };
+        headerRow.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFE0E0E0' }
+        };
+
+        // Auto-fit columns
+        worksheet.columns.forEach(column => {
+            column.width = Math.max(
+                Math.max(...column.values.map(v => v ? v.toString().length : 0)),
+                column.header.length
+            ) + 2;
+        });
+
+        // Set response headers
+        res.setHeader(
+            'Content-Type',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+        res.setHeader(
+            'Content-Disposition',
+            'attachment; filename=keyword-analysis-results.xlsx'
+        );
+
+        // Write to response
+        await workbook.xlsx.write(res);
+        res.end();
+
+    } catch (error) {
+        console.error('Download error:', error);
+        res.status(500).json({
+            error: 'Download failed',
+            message: error.message
         });
     }
 });
