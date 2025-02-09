@@ -493,6 +493,19 @@
             font-size: 0.875rem;
             color: var(--text-light);
         }
+
+        .reconnect-btn {
+            margin-top: 10px;
+            padding: 8px 16px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .reconnect-btn:hover {
+            background-color: #45a049;
+        }
     </style>
 </head>
 <body>
@@ -582,6 +595,104 @@
     </div>
 
     <script>
+        let eventSource = null;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 5;
+        const RECONNECT_DELAY = 3000;
+        let isProcessing = false;
+        let lastEventTime = Date.now();
+
+        function setupEventSource() {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource('/api/analysis-progress');
+            
+            eventSource.onopen = () => {
+                console.log('SSE connection established');
+                reconnectAttempts = 0;
+                lastEventTime = Date.now();
+            };
+
+            eventSource.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('Received event:', data);
+                    lastEventTime = Date.now();
+
+                    // Handle different event types
+                    switch(data.type) {
+                        case 'connected':
+                            console.log('Connected to server with ID:', data.clientId);
+                            break;
+                        case 'heartbeat':
+                            // Silent acknowledgment of heartbeat
+                            break;
+                        case 'start':
+                            handleStart(data);
+                            break;
+                        case 'progress':
+                            handleProgress(data);
+                            break;
+                        case 'complete':
+                            handleComplete(data);
+                            isProcessing = false;
+                            eventSource.close();
+                            break;
+                        case 'error':
+                            handleError(data);
+                            break;
+                    }
+                } catch (error) {
+                    console.error('Error processing event:', error);
+                }
+            };
+
+            eventSource.onerror = (error) => {
+                console.error('SSE Error:', error);
+                eventSource.close();
+                
+                if (isProcessing && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                    console.log(`Reconnecting... Attempt ${reconnectAttempts + 1}`);
+                    reconnectAttempts++;
+                    setTimeout(setupEventSource, RECONNECT_DELAY * reconnectAttempts);
+                } else if (isProcessing) {
+                    showError('Connection lost. The analysis will continue in the background.');
+                    // Optional: Add a manual reconnect button
+                    showReconnectButton();
+                }
+            };
+
+            // Monitor connection health
+            const healthCheck = setInterval(() => {
+                if (isProcessing && Date.now() - lastEventTime > 30000) { // 30 seconds
+                    console.log('No events received for 30 seconds, reconnecting...');
+                    eventSource.close();
+                    setupEventSource();
+                }
+            }, 10000);
+
+            return () => {
+                clearInterval(healthCheck);
+                if (eventSource) {
+                    eventSource.close();
+                }
+            };
+        }
+
+        function showReconnectButton() {
+            const reconnectBtn = document.createElement('button');
+            reconnectBtn.textContent = 'Reconnect';
+            reconnectBtn.className = 'reconnect-btn';
+            reconnectBtn.onclick = () => {
+                reconnectAttempts = 0;
+                setupEventSource();
+                reconnectBtn.remove();
+            };
+            document.getElementById('result').appendChild(reconnectBtn);
+        }
+
         async function analyzeFile() {
             const fileInput = document.getElementById('file');
             const topicInput = document.getElementById('topic');
@@ -597,9 +708,6 @@
             const progressText = document.getElementById('progressText');
 
             const processedKeywordSet = new Set();
-            let isProcessing = false;
-            let reconnectAttempts = 0;
-            const MAX_RECONNECT_ATTEMPTS = 3;
 
             try {
                 if (!fileInput.files[0]) {
@@ -632,88 +740,6 @@
 
                 if (!response.ok) {
                     throw new Error('Failed to start analysis');
-                }
-
-                function setupEventSource() {
-                    const eventSource = new EventSource('/api/analysis-progress');
-                    
-                    eventSource.onopen = () => {
-                        console.log('SSE connection established');
-                        reconnectAttempts = 0;
-                    };
-
-                    eventSource.onmessage = (event) => {
-                        const data = JSON.parse(event.data);
-                        console.log('Received event:', data);
-
-                        if (data.type === 'heartbeat') return;
-
-                        switch(data.type) {
-                            case 'connected':
-                                console.log('Connected to server');
-                                break;
-
-                            case 'start':
-                                totalKeywordsEl.textContent = data.total;
-                                remainingKeywordsEl.textContent = data.total;
-                                processedKeywordsEl.textContent = '0';
-                                break;
-
-                            case 'processing':
-                            case 'completed':
-                                if (!processedKeywordSet.has(data.keyword)) {
-                                    processedKeywordSet.add(data.keyword);
-                                    const keywordItem = document.createElement('div');
-                                    keywordItem.className = 'keyword-item';
-                                    keywordItem.setAttribute('data-keyword', data.keyword);
-                                    keywordItem.innerHTML = `
-                                        <div class="keyword-text">
-                                            <i class="fas fa-keyboard"></i>
-                                            ${data.keyword}
-                                        </div>
-                                        <div class="keyword-status">
-                                            <span class="status-badge ${data.status.toLowerCase()}">
-                                                ${data.status}
-                                            </span>
-                                        </div>
-                                    `;
-                                    processingKeywords.insertBefore(keywordItem, processingKeywords.firstChild);
-                                } else {
-                                    updateKeywordStatus(data.keyword, data.status);
-                                }
-                                break;
-
-                            case 'progress':
-                                updateProgress(data.processed, data.total);
-                                break;
-
-                            case 'complete':
-                                isProcessing = false;
-                                eventSource.close();
-                                downloadBtn.disabled = false;
-                                showCompletionMessage(data.message);
-                                break;
-
-                            case 'error':
-                                throw new Error(data.message);
-                        }
-                    };
-
-                    eventSource.onerror = (error) => {
-                        console.error('SSE Error:', error);
-                        eventSource.close();
-                        
-                        if (isProcessing && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                            console.log(`Reconnecting... Attempt ${reconnectAttempts + 1}`);
-                            reconnectAttempts++;
-                            setTimeout(setupEventSource, 1000 * reconnectAttempts);
-                        } else if (isProcessing) {
-                            showError('Connection lost. Please try again.');
-                            isProcessing = false;
-                        }
-                    };
-
-                    return eventSource;
                 }
 
                 setupEventSource();
