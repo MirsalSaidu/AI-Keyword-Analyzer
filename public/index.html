@@ -506,6 +506,63 @@
         .reconnect-btn:hover {
             background-color: #45a049;
         }
+
+        .success {
+            color: #4CAF50;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            background-color: #e8f5e9;
+        }
+
+        .error {
+            color: #f44336;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            background-color: #ffebee;
+        }
+
+        .completion-time {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        .keyword-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .keyword-text {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.9em;
+        }
+
+        .status-badge.processing {
+            background-color: #fff3e0;
+            color: #f57c00;
+        }
+
+        .status-badge.done {
+            background-color: #e8f5e9;
+            color: #4caf50;
+        }
+
+        .status-badge.error {
+            background-color: #ffebee;
+            color: #f44336;
+        }
     </style>
 </head>
 <body>
@@ -837,6 +894,83 @@
                 console.error('Download error:', error);
                 showError(`Download error: ${error.message}`);
             }
+        }
+
+        function handleStart(data) {
+            const totalKeywordsEl = document.getElementById('totalKeywords');
+            const remainingKeywordsEl = document.getElementById('remainingKeywords');
+            const processedKeywordsEl = document.getElementById('processedKeywords');
+
+            totalKeywordsEl.textContent = data.total;
+            remainingKeywordsEl.textContent = data.total;
+            processedKeywordsEl.textContent = '0';
+            
+            console.log('Analysis started:', data);
+        }
+
+        function handleProgress(data) {
+            const processedKeywordsEl = document.getElementById('processedKeywords');
+            const remainingKeywordsEl = document.getElementById('remainingKeywords');
+            const progressBarFill = document.getElementById('progressBarFill');
+            const progressText = document.getElementById('progressText');
+            const processingKeywords = document.getElementById('processingKeywords');
+
+            // Update progress numbers
+            processedKeywordsEl.textContent = data.processed;
+            remainingKeywordsEl.textContent = data.total - data.processed;
+
+            // Update progress bar
+            const progress = Math.round((data.processed / data.total) * 100);
+            progressBarFill.style.width = `${progress}%`;
+            progressText.textContent = `${progress}%`;
+
+            // Update keyword list if provided
+            if (data.keyword && !processedKeywordSet.has(data.keyword)) {
+                processedKeywordSet.add(data.keyword);
+                const keywordItem = document.createElement('div');
+                keywordItem.className = 'keyword-item';
+                keywordItem.setAttribute('data-keyword', data.keyword);
+                keywordItem.innerHTML = `
+                    <div class="keyword-text">
+                        <i class="fas fa-keyboard"></i>
+                        ${data.keyword}
+                    </div>
+                    <div class="keyword-status">
+                        <span class="status-badge ${data.status.toLowerCase()}">
+                            ${data.status}
+                        </span>
+                    </div>
+                `;
+                processingKeywords.insertBefore(keywordItem, processingKeywords.firstChild);
+            }
+
+            console.log('Progress update:', data);
+        }
+
+        function handleComplete(data) {
+            const downloadBtn = document.getElementById('downloadBtn');
+            downloadBtn.disabled = false;
+            
+            showSuccess(data.message || 'Analysis completed successfully!');
+            console.log('Analysis complete:', data);
+        }
+
+        function handleError(data) {
+            showError(data.message || 'An error occurred');
+            console.error('Analysis error:', data);
+        }
+
+        function showSuccess(message) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.style.display = 'block';
+            resultDiv.className = 'success';
+            resultDiv.innerHTML = `
+                <i class="fas fa-check-circle"></i>
+                ${message}
+                <div class="completion-time">
+                    Completed at ${new Date().toLocaleTimeString()}
+                </div>
+            `;
         }
 
         // Update the download button click handler
